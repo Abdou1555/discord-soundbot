@@ -9,7 +9,6 @@ import {
   type TextChannel,
   type VoiceState,
 } from "discord.js";
-
 import type Config from "~/config/Config";
 import QueueItem from "~/queue/QueueItem";
 import type SoundQueue from "~/queue/SoundQueue";
@@ -17,14 +16,16 @@ import * as entrances from "~/util/db/Entrances";
 import * as exits from "~/util/db/Exits";
 import localize from "~/util/i18n/localize";
 import { getSounds } from "~/util/SoundUtil";
-
 import type Command from "../commands/Command";
 import MessageHandler from "./MessageHandler";
+
+const ENTRANCE_COOLDOWN_MS = 30000; // 30 seconds cooldown per user
 
 export default class SoundBot extends Client {
   public readonly config: Config;
   public readonly queue: SoundQueue;
   private readonly messageHandler: MessageHandler = new MessageHandler();
+  private readonly entranceCooldowns = new Map<string, number>();
 
   constructor(config: Config, queue: SoundQueue) {
     super({
@@ -35,89 +36,71 @@ export default class SoundBot extends Client {
         GatewayIntentBits.MessageContent,
       ],
     });
-
     this.config = config;
     this.queue = queue;
-
     this.addEventListeners();
   }
-
   public start() {
     this.login(this.config.token);
   }
-
   public registerAdditionalCommands(commands: Command[]) {
     this.messageHandler.registerCommands(commands);
   }
-
   private addEventListeners() {
     this.on(Events.ClientReady, this.onReady);
     this.on(Events.MessageCreate, this.onMessage);
     this.on(Events.VoiceStateUpdate, this.onUserLeavesVoiceChannel);
     this.on(Events.VoiceStateUpdate, this.onUserJoinsVoiceChannel);
     this.on(Events.GuildCreate, this.onBotJoinsServer);
-    // this.on(Events.Error, (error) => console.log({ error }));
   }
-
   private onReady() {
     if (!this.user) return;
-
     this.user.setActivity(this.config.game);
   }
-
   private onUserJoinsVoiceChannel(oldState: VoiceState, newState: VoiceState) {
     const { channel: previousVoiceChannel } = oldState;
     const { channel: currentVoiceChannel, member } = newState;
-
     if (!member) return;
     if (!currentVoiceChannel || previousVoiceChannel === currentVoiceChannel) return;
     if (!entrances.exists(member.id)) return;
 
+    const now = Date.now();
+    const lastPlayed = this.entranceCooldowns.get(member.id) ?? 0;
+    if (now - lastPlayed < ENTRANCE_COOLDOWN_MS) return;
+    this.entranceCooldowns.set(member.id, now);
+
     const sound = entrances.get(member.id);
     if (!getSounds().includes(sound)) return;
-
     this.queue.add(new QueueItem(sound, currentVoiceChannel));
   }
-
   private onUserLeavesVoiceChannel(oldState: VoiceState, newState: VoiceState) {
     const { channel: previousVoiceChannel } = oldState;
     const { channel: currentVoiceChannel, member } = newState;
-
     if (!member) return;
     if (!previousVoiceChannel || previousVoiceChannel === currentVoiceChannel) return;
     if (!exits.exists(member.id)) return;
-
     const sound = exits.get(member.id);
     if (!getSounds().includes(sound)) return;
-
     this.queue.add(new QueueItem(sound, previousVoiceChannel));
   }
-
   private onMessage(message: Message) {
     this.messageHandler.handle(message);
   }
-
   private onBotJoinsServer(guild: Guild) {
     if (!guild.available) return;
-
     const channel = this.findFirstWritableChannel(guild);
     if (!channel) return;
-
     channel.send(localize.t("welcome", { prefix: this.config.prefix }));
   }
-
   private findFirstWritableChannel(guild: Guild) {
     if (!guild.members.me) return;
-
     const channels = guild.channels.cache
       .filter((channel) => channel.type === ChannelType.GuildText)
       .filter((channel) => {
         // biome-ignore lint/style/noNonNullAssertion: no idea how this would be nil, imo the typing is wrong lmao
         const permissions = channel.permissionsFor(guild.members.me!);
-
         return Boolean(permissions?.has(PermissionFlagsBits.SendMessages));
       });
-
     if (!channels.size) return;
     return channels.first() as TextChannel;
   }
