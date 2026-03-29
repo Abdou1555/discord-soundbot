@@ -129,8 +129,10 @@ export default class SoundQueue {
   };
 
   private handleFinishedPlayingSound = () => {
-    if (!this.currentSound) throw Error("No currentSound in context");
-    if (!this.connection) throw Error("No connection in context");
+    if (!this.currentSound || !this.connection) {
+      this.currentSound = null;
+      return;
+    }
 
     const { name, channel, message, count } = this.currentSound;
     sounds.incrementCount(name);
